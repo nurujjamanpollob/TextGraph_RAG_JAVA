@@ -1,53 +1,94 @@
 package com.nurujjamanpollob.textenginejava.rag.io;
 
 import com.nurujjamanpollob.textenginejava.rag.ProjectOrchestrator;
+import com.nurujjamanpollob.textenginejava.rag.utils.RagLogger;
 
 import java.io.IOException;
 import java.nio.file.*;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.HashMap;
+import java.util.Map;
 
 public class FileWatcher implements Runnable {
 
     private final Path rootDir;
-    private final ProjectOrchestrator orchestrator; // Use Orchestrator instead of Collector directly
+    private final ProjectOrchestrator orchestrator;
     private final String projectId;
+    private final Map<Path, WatchKey> watchKeys;
 
     public FileWatcher(Path rootDir, ProjectOrchestrator orchestrator, String projectId) {
         this.rootDir = rootDir;
         this.orchestrator = orchestrator;
         this.projectId = projectId;
+        this.watchKeys = new HashMap<>();
     }
 
     @Override
     public void run() {
         try (WatchService watchService = FileSystems.getDefault().newWatchService()) {
-            // Recursive registration needs a specific helper library or manual tree walking
-            // Standard Java WatchService only watches the registered directory, not sub-directories automatically.
-            // For this example, we assume rootDir, but for deep watching, you need to walk the tree and register all.
-            rootDir.register(watchService, StandardWatchEventKinds.ENTRY_MODIFY, StandardWatchEventKinds.ENTRY_DELETE, StandardWatchEventKinds.ENTRY_CREATE);
-
-            System.out.println("[Watcher] Active for: " + rootDir);
+            registerAllDirectories(watchService, rootDir);
+            RagLogger.info("Recursive file watcher active for: " + rootDir);
 
             while (!Thread.currentThread().isInterrupted()) {
                 WatchKey key = watchService.take();
+                Path dir = (Path) key.watchable();
+
                 for (WatchEvent<?> event : key.pollEvents()) {
-                    Path changedPath = (Path) event.context();
-                    Path fullPath = rootDir.resolve(changedPath);
+                    WatchEvent.Kind<?> kind = event.kind();
+                    if (kind == StandardWatchEventKinds.OVERFLOW) continue;
 
-                    if(fullPath.toString().contains(".rag_data")) continue; // Ignore our own index files
+                    Path name = (Path) event.context();
+                    Path child = dir.resolve(name);
 
-                    String type = (event.kind() == StandardWatchEventKinds.ENTRY_DELETE) ? "DELETE" : "MODIFY";
+                    if (child.toString().contains(".rag_data")) continue;
 
-                    // Debounce slightly
-                    if(!type.equals("DELETE")) Thread.sleep(100);
+                    if (kind == StandardWatchEventKinds.ENTRY_CREATE) {
+                        try {
+                            if (Files.isDirectory(child, LinkOption.NOFOLLOW_LINKS)) {
+                                registerAllDirectories(watchService, child);
+                            }
+                        } catch (IOException x) {
+                            // ignore
+                        }
+                    }
 
-                    orchestrator.handleFileChange(projectId, fullPath, type);
+                    String type = (kind == StandardWatchEventKinds.ENTRY_DELETE) ? "DELETE" : "MODIFY";
+                    // Simple debounce
+                    if (!"DELETE".equals(type)) Thread.sleep(50);
+
+                    orchestrator.handleFileChange(projectId, child, type);
                 }
-                key.reset();
+
+                if (!key.reset()) {
+                    watchKeys.remove(dir);
+                    if (watchKeys.isEmpty()) break;
+                }
             }
         } catch (InterruptedException ie) {
-            System.out.println("Watcher stopped for " + projectId);
+            RagLogger.info("Watcher stopped for " + projectId);
         } catch (Exception e) {
-            e.printStackTrace();
+            RagLogger.error("Watcher error: " + e.getMessage());
         }
+    }
+
+    private void registerAllDirectories(WatchService watchService, Path start) throws IOException {
+        Files.walkFileTree(start, new SimpleFileVisitor<Path>() {
+            @Override
+            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+                if (!dir.getFileName().toString().startsWith(".") && !dir.getFileName().toString().equals(".rag_data")) {
+                    registerDirectory(watchService, dir);
+                    return FileVisitResult.CONTINUE;
+                }
+                return FileVisitResult.SKIP_SUBTREE;
+            }
+        });
+    }
+
+    private void registerDirectory(WatchService watchService, Path dir) throws IOException {
+        WatchKey key = dir.register(watchService,
+                StandardWatchEventKinds.ENTRY_CREATE,
+                StandardWatchEventKinds.ENTRY_DELETE,
+                StandardWatchEventKinds.ENTRY_MODIFY);
+        watchKeys.put(dir, key);
     }
 }

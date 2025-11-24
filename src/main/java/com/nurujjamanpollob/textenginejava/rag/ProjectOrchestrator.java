@@ -1,10 +1,14 @@
 package com.nurujjamanpollob.textenginejava.rag;
 
 import com.google.gson.Gson;
+import com.nurujjamanpollob.textenginejava.rag.config.RagConfig;
 import com.nurujjamanpollob.textenginejava.rag.context.ContextCollector;
 import com.nurujjamanpollob.textenginejava.rag.io.FileWatcher;
 import com.nurujjamanpollob.textenginejava.rag.model.ProjectMetadata;
 import com.nurujjamanpollob.textenginejava.rag.utils.HashUtils;
+import com.nurujjamanpollob.textenginejava.rag.utils.PathValidator;
+import com.nurujjamanpollob.textenginejava.rag.utils.RagLogger;
+import com.nurujjamanpollob.textenginejava.rag.exception.RagException;
 import javadev.stringcollections.textreplacor.filesquery.DirectoryReader;
 import javadev.stringcollections.textreplacor.mimedetector.TextFileDetector;
 
@@ -15,6 +19,7 @@ import java.util.*;
 
 public class ProjectOrchestrator {
 
+    private final RagConfig config;
     private final ContextCollector collector;
     private final Map<String, Path> activeProjects;
     private final Map<String, ProjectMetadata> projectMetadataMap;
@@ -22,6 +27,7 @@ public class ProjectOrchestrator {
     private final Gson gson;
 
     public ProjectOrchestrator(ContextCollector collector) {
+        this.config = RagConfig.getInstance();
         this.collector = collector;
         this.activeProjects = new HashMap<>();
         this.projectMetadataMap = new HashMap<>();
@@ -29,101 +35,86 @@ public class ProjectOrchestrator {
         this.gson = new Gson();
     }
 
-    /**
-     * Checks if the RAG metadata exists for the given project path.
-     * @param rootDirPath The root directory of the project.
-     * @return true if metadata exists, false otherwise.
-     */
     public boolean checkRagMetadataExists(String rootDirPath) {
-        Path root = Paths.get(rootDirPath);
-        Path metaFile = root.resolve(".rag_data").resolve("metadata.json");
-        return Files.exists(metaFile);
+        try {
+            Path root = PathValidator.validatePath(rootDirPath);
+            Path metaFile = root.resolve(".rag_data").resolve("metadata.json");
+            return Files.exists(metaFile);
+        } catch (Exception e) {
+            RagLogger.error("Path check error: " + e.getMessage());
+            return false;
+        }
     }
 
-    /**
-     * Manually creates the RAG metadata structure for a project.
-     * @param projectId The project identifier.
-     * @param rootDirPath The root directory of the project.
-     * @throws Exception If metadata already exists.
-     */
     public void createRagMetadata(String projectId, String rootDirPath) throws Exception {
         if (checkRagMetadataExists(rootDirPath)) {
-            throw new Exception("RAG metadata already exists for project: " + projectId);
+            throw new RagException("Metadata already exists for: " + projectId);
         }
 
-        Path rootPath = Paths.get(rootDirPath);
+        Path rootPath = PathValidator.validatePath(rootDirPath);
         if (!Files.isDirectory(rootPath)) {
-            throw new IOException("Provided path is not a valid directory: " + rootDirPath);
+            throw new IOException("Not a directory: " + rootDirPath);
         }
 
-        // Initialize empty metadata
         ProjectMetadata metadata = new ProjectMetadata();
         metadata.setLastIndexed(System.currentTimeMillis());
         metadata.setFileHashes(new HashMap<>());
 
-        // Store in memory
         projectMetadataMap.put(projectId, metadata);
         activeProjects.put(projectId, rootPath);
 
-        // Save to disk (Creates .rag_data folder)
         saveMetadata(projectId, rootPath);
-
-        // Initialize and save empty index
         collector.saveIndexToDisk(projectId, rootPath);
-
-        System.out.println("Initialized RAG metadata for project: " + projectId);
+        RagLogger.info("Initialized RAG project: " + projectId);
     }
 
-    /**
-     * Finds the Project ID associated with a specific file or directory path.
-     * This is useful for reverse-looking up context from a file path.
-     *
-     * @param path The path to search for.
-     * @return The projectId if found, or null if the path is not part of any active project.
-     */
     public String findProjectId(Path path) {
-        Path absPath = path.toAbsolutePath();
-        String bestMatchId = null;
-        int maxLen = -1;
+        try {
+            Path absPath = path.toAbsolutePath().normalize();
+            String bestMatchId = null;
+            int maxLen = -1;
 
-        // Find the project with the longest matching root path (handles nested projects correctly)
-        for (Map.Entry<String, Path> entry : activeProjects.entrySet()) {
-            Path projectRoot = entry.getValue().toAbsolutePath();
-            if (absPath.startsWith(projectRoot)) {
-                // We found a parent project, check if it is more specific than previous matches
-                int len = projectRoot.toString().length();
-                if (len > maxLen) {
-                    maxLen = len;
-                    bestMatchId = entry.getKey();
+            for (Map.Entry<String, Path> entry : activeProjects.entrySet()) {
+                Path projectRoot = entry.getValue().toAbsolutePath();
+                if (absPath.startsWith(projectRoot)) {
+                    int len = projectRoot.toString().length();
+                    if (len > maxLen) {
+                        maxLen = len;
+                        bestMatchId = entry.getKey();
+                    }
                 }
             }
+            return bestMatchId;
+        } catch (Exception e) {
+            return null;
         }
-        return bestMatchId;
     }
 
     public void loadAndSyncProject(String projectId, String rootDirPath) {
-        Path rootPath = Paths.get(rootDirPath);
-        if (!Files.isDirectory(rootPath)) {
-            System.out.println("Error: Path is not a directory.");
-            return;
+        try {
+            Path rootPath = PathValidator.validatePath(rootDirPath);
+            if (!Files.isDirectory(rootPath)) {
+                RagLogger.error("Invalid project directory: " + rootPath);
+                return;
+            }
+
+            activeProjects.put(projectId, rootPath);
+
+            collector.loadIndexFromDisk(projectId, rootPath);
+            loadMetadata(projectId, rootPath);
+
+            RagLogger.info("Syncing project [" + projectId + "]...");
+            performSmartSync(projectId, rootPath);
+
+            stopWatcher(projectId);
+            FileWatcher watcher = new FileWatcher(rootPath, this, projectId);
+            Thread watcherThread = new Thread(watcher);
+            watcherThread.start();
+            watchers.put(projectId, watcherThread);
+
+        } catch (Exception e) {
+            RagLogger.error("Failed to load project: " + e.getMessage());
         }
-
-        activeProjects.put(projectId, rootPath);
-
-        // 1. Try to load existing Index & Metadata
-        collector.loadIndexFromDisk(projectId, rootPath);
-        loadMetadata(projectId, rootPath);
-
-        // 2. Perform Smart Sync (Delta check)
-        System.out.println("Syncing project [" + projectId + "]...");
-        performSmartSync(projectId, rootPath);
-
-        // 3. Start Watcher
-        stopWatcher(projectId); // Stop existing if any
-        FileWatcher watcher = new FileWatcher(rootPath, this, projectId);
-        Thread watcherThread = new Thread(watcher);
-        watcherThread.start();
-        watchers.put(projectId, watcherThread);
     }
 
     private void performSmartSync(String projectId, Path rootPath) {
@@ -142,75 +133,67 @@ public class ProjectOrchestrator {
             if (!isValidCodeFile(filePath)) continue;
 
             String relativePath = rootPath.relativize(filePath).toString();
+            // Hash calculation is memory safe
             String currentHash = HashUtils.calculateFileHash(filePath);
-
             currentHashes.put(relativePath, currentHash);
 
-            // Check if file is new or modified
             if (!knownHashes.containsKey(relativePath) || !knownHashes.get(relativePath).equals(currentHash)) {
-                try {
-                    // System.out.println("Indexing: " + relativePath);
-                    String content = Files.readString(filePath);
-                    collector.updateFile(projectId, relativePath, content);
-                    updated++;
-                } catch (IOException e) {
-                    System.err.println("Failed to read: " + relativePath);
-                }
+                // Use streaming update to handle large files efficiently
+                collector.updateFileStreaming(projectId, relativePath, filePath);
+                updated++;
             } else {
                 skipped++;
             }
         }
 
-        // Check for deleted files (Present in Metadata but not in Current Scan)
+        // Handle deletions
         for (String oldFile : knownHashes.keySet()) {
             if (!currentHashes.containsKey(oldFile)) {
-                System.out.println("Detected deletion: " + oldFile);
                 collector.removeFile(projectId, oldFile);
                 updated++;
             }
         }
 
-        // Update Metadata
         metadata.setFileHashes(currentHashes);
         metadata.setLastIndexed(System.currentTimeMillis());
-
-        System.out.printf("Sync Complete. Updated/Added: %d, Unchanged: %d%n", updated, skipped);
-
-        // Save everything to disk
+        RagLogger.info("Sync Complete. Updated: " + updated + ", Unchanged: " + skipped);
         saveState(projectId);
     }
 
-    // Called by FileWatcher
     public void handleFileChange(String projectId, Path filePath, String eventType) {
         Path root = activeProjects.get(projectId);
         if (root == null) return;
 
-        String relativePath = root.relativize(filePath).toString();
+        try {
+            Path validatedPath = PathValidator.validateAndNormalizePath(filePath.toString(), root);
+            String relativePath = root.relativize(validatedPath).toString();
 
-        if (eventType.equals("DELETE")) {
-            collector.removeFile(projectId, relativePath);
-            projectMetadataMap.get(projectId).getFileHashes().remove(relativePath);
-        } else {
-            // Modify or Create
-            if (!isValidCodeFile(filePath)) return;
-            try {
-                String content = Files.readString(filePath);
-                String newHash = HashUtils.calculateFileHash(filePath);
+            if ("DELETE".equals(eventType)) {
+                collector.removeFile(projectId, relativePath);
+                if (projectMetadataMap.containsKey(projectId)) {
+                    projectMetadataMap.get(projectId).getFileHashes().remove(relativePath);
+                }
+            } else {
+                if (!isValidCodeFile(validatedPath)) return;
 
-                collector.updateFile(projectId, relativePath, content);
+                // Use streaming to be memory safe
+                collector.updateFileStreaming(projectId, relativePath, validatedPath);
+
+                String newHash = HashUtils.calculateFileHash(validatedPath);
                 projectMetadataMap.get(projectId).getFileHashes().put(relativePath, newHash);
-            } catch (IOException e) {
-                e.printStackTrace();
             }
+            saveState(projectId);
+        } catch (Exception e) {
+            RagLogger.error("Error handling file change: " + e.getMessage());
         }
-        // Auto-save state on change (or you could throttle this)
-        saveState(projectId);
     }
 
     private void saveState(String projectId) {
         Path root = activeProjects.get(projectId);
-        collector.saveIndexToDisk(projectId, root);
-        saveMetadata(projectId, root);
+        if (root != null) {
+            collector.saveIndexToDisk(projectId, root);
+            saveMetadata(projectId, root);
+        }
     }
 
     private void loadMetadata(String projectId, Path root) {
@@ -221,51 +204,81 @@ public class ProjectOrchestrator {
                 ProjectMetadata meta = gson.fromJson(json, ProjectMetadata.class);
                 projectMetadataMap.put(projectId, meta);
             } catch (IOException e) {
-                System.err.println("Error loading metadata, starting fresh.");
+                RagLogger.error("Corrupt metadata, starting fresh.");
             }
         }
     }
 
     private void saveMetadata(String projectId, Path root) {
-        Path dataDir = root.resolve(".rag_data");
         try {
+            Path dataDir = root.resolve(".rag_data");
             if (!Files.exists(dataDir)) Files.createDirectories(dataDir);
             String json = gson.toJson(projectMetadataMap.get(projectId));
             Files.writeString(dataDir.resolve("metadata.json"), json);
         } catch (IOException e) {
-            e.printStackTrace();
+            RagLogger.error("Failed to save metadata: " + e.getMessage());
         }
     }
 
     private void stopWatcher(String projectId) {
         if(watchers.containsKey(projectId)) {
-            watchers.get(projectId).interrupt();
+            Thread t = watchers.get(projectId);
+            if (t != null) t.interrupt();
         }
     }
 
+    /**
+     * Searches the loaded project for relevant text segments based on the query.
+     * @param projectId The project identifier.
+     * @param query The search query.
+     */
     public void searchProject(String projectId, String query) {
         if (!activeProjects.containsKey(projectId)) {
-            System.out.println("Project not active. Use 'load <id> <path>' first.");
+            System.out.println("Project not loaded.");
             return;
         }
-        Map<String, List<String>> results = collector.searchGrouped(query, projectId);
-
+        Map<String, List<String>> results = collector.searchGrouped(query, projectId, -1, -1);
         if (results.isEmpty()) {
-            System.out.println("No relevant code found.");
+            System.out.println("No results found.");
         } else {
             results.forEach((file, snippets) -> {
-                System.out.println("\n📄 FILE: " + file);
-                for (String snippet : snippets) {
-                    System.out.println("   --- Snippet ---");
-                    System.out.println("   " + snippet.replace("\n", "\n   ").trim());
-                }
+                System.out.println("\n📄 " + file);
+                snippets.forEach(s -> System.out.println("   --- " + s.replace("\n", " ").trim() + "..."));
             });
         }
     }
 
+    /**
+     * Searches the loaded project for relevant text segments based on the query.
+     * @param projectId The project identifier.
+     * @param query The search query.
+     * @param maxResults Maximum number of results to return.
+     * @param minScore Minimum similarity score threshold.
+     */
+    public void searchProject(String projectId, String query, int maxResults, double minScore) {
+        if (!activeProjects.containsKey(projectId)) {
+            System.out.println("Project not loaded.");
+            return;
+        }
+        Map<String, List<String>> results = collector.searchGrouped(query, projectId, maxResults, minScore);
+        if (results.isEmpty()) {
+            System.out.println("No results found.");
+        } else {
+            results.forEach((file, snippets) -> {
+                System.out.println("\n📄 " + file);
+                snippets.forEach(s -> System.out.println("   --- " + s.replace("\n", " ").trim() + "..."));
+            });
+        }
+    }
+
+    /**
+     * Simple text file validation to filter out binaries and irrelevant files.
+     * @param file The file path to validate.
+     * @return True if it's a valid text/code file, false otherwise.
+     */
     private boolean isValidCodeFile(Path file) {
         String name = file.toString();
-        if (name.contains(".rag_data") || name.contains("/.") || name.contains("\\.")) return false;
+        if (name.contains(".rag_data") || name.contains(File.separator + ".")) return false;
         try {
             return TextFileDetector.isTextFile(file);
         } catch (IOException e) {

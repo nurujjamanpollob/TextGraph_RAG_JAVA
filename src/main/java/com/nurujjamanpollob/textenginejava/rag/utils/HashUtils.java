@@ -22,8 +22,17 @@ public class HashUtils {
                 hexString.append(String.format("%02x", b));
             }
             return hexString.toString();
-        } catch (IOException | NoSuchAlgorithmException e) {
-            throw new RuntimeException("Failed to calculate hash for: " + path, e);
+        } catch (IOException e) {
+            // Log the actual error internally but don't expose file paths in exceptions
+            RagLogger.error("Failed to calculate hash for file: " + e.getMessage());
+            throw new RuntimeException("Failed to calculate file hash");
+        } catch (NoSuchAlgorithmException e) {
+            RagLogger.error("Hashing algorithm not available: " + e.getMessage());
+            throw new RuntimeException("Hashing algorithm not available");
+        } catch (Exception e) {
+            // Catch any other unexpected exceptions
+            RagLogger.error("Unexpected error during hash calculation: " + e.getMessage());
+            throw new RuntimeException("Failed to calculate file hash");
         }
     }
 }
