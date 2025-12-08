@@ -5,6 +5,7 @@ import com.nurujjamanpollob.textenginejava.rag.config.RagConfig;
 import com.nurujjamanpollob.textenginejava.rag.context.ContextCollector;
 import com.nurujjamanpollob.textenginejava.rag.io.FileWatcher;
 import com.nurujjamanpollob.textenginejava.rag.model.ProjectMetadata;
+import com.nurujjamanpollob.textenginejava.rag.model.RAGSearchResult;
 import com.nurujjamanpollob.textenginejava.rag.utils.HashUtils;
 import com.nurujjamanpollob.textenginejava.rag.utils.PathValidator;
 import com.nurujjamanpollob.textenginejava.rag.utils.RagLogger;
@@ -249,7 +250,7 @@ public class ProjectOrchestrator {
     }
 
     /**
-     * Searches the loaded project for relevant text segments based on the query.
+     * Searches the loaded project for relevant text segments based on the query, and print results.
      * @param projectId The project identifier.
      * @param query The search query.
      * @param maxResults Maximum number of results to return.
@@ -269,6 +270,25 @@ public class ProjectOrchestrator {
                 snippets.forEach(s -> System.out.println("   --- " + s.replace("\n", " ").trim() + "..."));
             });
         }
+    }
+
+    /**
+     * Searches the loaded project for relevant text segments based on the query.
+     * @param projectId The project identifier.
+     * @param query The search query.
+     * @param maxResults Maximum number of results to return.
+     * @param minScore Minimum similarity score threshold.
+     * @return List of {@link com.nurujjamanpollob.textenginejava.rag.model.RAGSearchResult} objects.
+     */
+    public List<RAGSearchResult> searchProjectAndGetResult(String projectId, String query, int maxResults, double minScore) {
+        List<com.nurujjamanpollob.textenginejava.rag.model.RAGSearchResult> searchResults = new ArrayList<>();
+
+        Map<String, List<String>> results = collector.searchGrouped(query, projectId, maxResults, minScore);
+        results.forEach((file, snippets) -> {
+            double score = 0.0; // Placeholder for actual score calculation
+            searchResults.add(new com.nurujjamanpollob.textenginejava.rag.model.RAGSearchResult(snippets, score, file));
+        });
+        return searchResults;
     }
 
     /**
