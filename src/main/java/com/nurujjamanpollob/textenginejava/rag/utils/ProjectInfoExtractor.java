@@ -10,10 +10,6 @@ import java.util.Set;
 
 public class ProjectInfoExtractor {
 
-    // Common binary or irrelevant extensions to skip during summary
-    private static final Set<String> IGNORED_EXTENSIONS = Set.of(
-            "class", "jar", "exe", "dll", "so", "png", "jpg", "jpeg", "gif", "ico", "zip", "tar", "gz"
-    );
 
     /**
      * Scans the directory and returns a statistical profile.
@@ -59,17 +55,13 @@ public class ProjectInfoExtractor {
     }
 
     private static boolean isValidSourceFile(Path file) {
-        String name = file.getFileName().toString();
 
-        // 1. Basic Name Check
-        if (name.startsWith(".")) return false;
+        // skip file from .rag_data directory
+        if (file.toString().contains(".rag_data")) {
+            return false;
+        }
 
-        // 2. Extension Check (Fastest)
-        String ext = getExtension(name);
-        if (IGNORED_EXTENSIONS.contains(ext)) return false;
-
-        // 3. Optional: Use your existing TextFileDetector for deeper check
-        // If scanning is too slow, remove this try-catch block and rely on extension only.
+        // Only Text files can be considered source files
         try {
             return TextFileDetector.isTextFile(file);
         } catch (IOException e) {
