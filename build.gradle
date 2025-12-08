@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
 }
 
 group = 'com.nurujjamanpollob.textenginejava.rag'
@@ -27,4 +28,18 @@ dependencies {
 
 test {
     useJUnitPlatform()
+}
+
+shadowJar {
+    archiveBaseName.set('text-engine-java-rag-app')
+    archiveClassifier.set('')
+    archiveVersion.set('1.0.0')
+}
+
+jar {
+    manifest {
+        attributes(
+                'Main-Class': 'com.nurujjamanpollob.textenginejava.rag.Main'
+        )
+    }
 }
