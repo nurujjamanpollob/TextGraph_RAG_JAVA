@@ -1,23 +1,26 @@
 package com.nurujjamanpollob.textenginejava.rag.model;
 
+import java.util.List;
+
 /**
  * @author nurujjamanpollob
  * @apinote, contains the result of a RAG search operation.
  */
 public class RAGSearchResult {
 
-    private final String content;
+    private final List<String> contents;
     private final double score;
     private final String filePath;
 
-    public RAGSearchResult(String content, double score, String filePath) {
-        this.content = content;
+    public RAGSearchResult(List<String> contents, double score, String filePath) {
+        this.contents = contents;
         this.score = score;
         this.filePath = filePath;
     }
 
-    public String getContent() {
-        return content;
+
+    public List<String> contents() {
+        return List.of(filePath);
     }
 
     public double getScore() {
@@ -30,9 +33,10 @@ public class RAGSearchResult {
     @Override
     public String toString() {
         return "RAGSearchResult{" +
-                "content='" + content + '\'' +
+                "contents=" + contents +
                 ", score=" + score +
                 ", filePath='" + filePath + '\'' +
                 '}';
     }
+
 }
